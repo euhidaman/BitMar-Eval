@@ -19,21 +19,89 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def download_dataset(dataset_name, config=None, cache_dir=None):
-    """Download a dataset and cache it locally"""
-    try:
-        logger.info(f"📥 Downloading {dataset_name}" + (f" ({config})" if config else ""))
+    """Download a dataset and cache it locally with robust error handling"""
+    max_retries = 3
+    retry_delay = 5  # seconds
 
-        if config:
-            dataset = load_dataset(dataset_name, config, cache_dir=cache_dir)
-        else:
-            dataset = load_dataset(dataset_name, cache_dir=cache_dir)
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"📥 Downloading {dataset_name}" + (f" ({config})" if config else "") +
+                       (f" - Attempt {attempt + 1}/{max_retries}" if attempt > 0 else ""))
 
-        logger.info(f"✅ Successfully downloaded {dataset_name}")
-        return True
+            # Clear any existing corrupted cache for this dataset
+            if attempt > 0 and cache_dir:
+                cache_path = Path(cache_dir)
+                dataset_cache_pattern = f"{dataset_name.replace('/', '--')}*"
+                if config:
+                    dataset_cache_pattern = f"{dataset_name.replace('/', '--')}__{config}*"
 
-    except Exception as e:
-        logger.error(f"❌ Failed to download {dataset_name}: {e}")
-        return False
+                # Remove potentially corrupted cache files
+                for cache_file in cache_path.glob(dataset_cache_pattern):
+                    if cache_file.is_dir():
+                        import shutil
+                        try:
+                            shutil.rmtree(cache_file)
+                            logger.info(f"🗑️  Cleared corrupted cache: {cache_file}")
+                        except Exception as e:
+                            logger.warning(f"Failed to clear cache {cache_file}: {e}")
+
+            # Download with specific parameters to avoid encoding issues
+            download_kwargs = {
+                'cache_dir': cache_dir,
+                'verification_mode': 'no_checks'  # Skip verification that might cause encoding issues
+            }
+
+            if config:
+                dataset = load_dataset(dataset_name, config, **download_kwargs)
+            else:
+                dataset = load_dataset(dataset_name, **download_kwargs)
+
+            logger.info(f"✅ Successfully downloaded {dataset_name}")
+            return True
+
+        except UnicodeDecodeError as e:
+            logger.warning(f"⚠️  UTF-8 encoding error for {dataset_name}: {e}")
+            if attempt < max_retries - 1:
+                logger.info(f"🔄 Retrying in {retry_delay} seconds...")
+                import time
+                time.sleep(retry_delay)
+                continue
+            else:
+                logger.error(f"❌ Failed to download {dataset_name} after {max_retries} attempts due to encoding issues")
+
+        except Exception as e:
+            error_msg = str(e).lower()
+
+            # Handle specific error types
+            if 'connection' in error_msg or 'timeout' in error_msg or 'network' in error_msg:
+                logger.warning(f"⚠️  Network error for {dataset_name}: {e}")
+                if attempt < max_retries - 1:
+                    logger.info(f"🔄 Retrying in {retry_delay} seconds...")
+                    import time
+                    time.sleep(retry_delay)
+                    continue
+            elif 'utf-8' in error_msg or 'decode' in error_msg or 'encoding' in error_msg:
+                logger.warning(f"⚠️  Encoding error for {dataset_name}: {e}")
+                if attempt < max_retries - 1:
+                    logger.info(f"🔄 Clearing cache and retrying...")
+                    import time
+                    time.sleep(retry_delay)
+                    continue
+            elif 'disk space' in error_msg or 'no space' in error_msg:
+                logger.error(f"❌ Insufficient disk space for {dataset_name}: {e}")
+                return False
+            else:
+                logger.warning(f"⚠️  Unexpected error for {dataset_name}: {e}")
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(retry_delay)
+                    continue
+
+            # If it's the last attempt, log the final error
+            if attempt == max_retries - 1:
+                logger.error(f"❌ Failed to download {dataset_name} after {max_retries} attempts: {e}")
+
+    return False
 
 def download_all_datasets(cache_dir=None):
     """Download all required benchmark datasets"""
