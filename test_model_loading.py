@@ -4,8 +4,18 @@ Quick verification script to test BitMar model loading before full evaluation
 """
 
 import torch
-from transformers import AutoModel, AutoTokenizer
 import logging
+import sys
+from pathlib import Path
+
+# Add current directory to path for imports
+sys.path.append(str(Path(__file__).parent))
+
+try:
+    from bitmar_adapter import create_bitmar_adapter
+    BITMAR_ADAPTER_AVAILABLE = True
+except ImportError:
+    BITMAR_ADAPTER_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -14,6 +24,10 @@ def test_bitmar_loading():
     """Test if BitMar model can be loaded successfully"""
     try:
         logger.info("🔍 Testing BitMar model loading...")
+
+        if not BITMAR_ADAPTER_AVAILABLE:
+            logger.error("❌ BitMar adapter not available. Make sure bitmar_adapter.py is in the same directory.")
+            return False
 
         # Check GPU availability
         if torch.cuda.is_available():
@@ -24,49 +38,44 @@ def test_bitmar_loading():
             device = torch.device("cpu")
             logger.info("⚠️  Using CPU (no CUDA available)")
 
-        # Test model loading
+        # Test model loading using BitMar adapter
         model_path = "euhidaman/bitmar-attention-multimodal"
         logger.info(f"📥 Loading model: {model_path}")
 
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-
-        model = AutoModel.from_pretrained(
-            model_path,
-            torch_dtype=torch.float16 if device.type == "cuda" else torch.float32,
-            device_map="auto" if device.type == "cuda" else None,
-            trust_remote_code=True
-        )
-
-        if device.type != "cuda":
-            model = model.to(device)
+        # Create BitMar adapter
+        adapter = create_bitmar_adapter(model_path, str(device))
 
         logger.info("✅ Model loaded successfully!")
 
+        # Get model info
+        model_info = adapter.get_model_info()
+        logger.info(f"Model type: {model_info.get('model_type', 'Unknown')}")
+        logger.info(f"Architecture: {model_info.get('architecture', 'Unknown')}")
+        if 'total_parameters' in model_info:
+            logger.info(f"Total parameters: {model_info['total_parameters']:,}")
+
         # Test tokenization
         test_text = "What is the capital of France?"
-        inputs = tokenizer(test_text, return_tensors="pt").to(device)
-        logger.info(f"✅ Tokenization test passed: {inputs['input_ids'].shape}")
+        logger.info(f"🧪 Testing generation with: '{test_text}'")
 
-        # Test inference
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_length=inputs['input_ids'].shape[1] + 10,
-                temperature=0.1,
-                do_sample=False,
-                pad_token_id=tokenizer.pad_token_id
-            )
-
-        response = tokenizer.decode(outputs[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True)
+        # Test generation
+        response = adapter.generate_response(test_text, max_length=20, temperature=0.1)
         logger.info(f"✅ Generation test passed: '{response}'")
+
+        # Test multiple choice evaluation
+        logger.info("🧪 Testing multiple choice evaluation...")
+        prompt = "What is the capital of France?"
+        choices = ["London", "Paris", "Berlin", "Madrid"]
+        predicted_idx = adapter.evaluate_multiple_choice(prompt, choices)
+        logger.info(f"✅ Multiple choice test passed: predicted choice {predicted_idx} ({choices[predicted_idx]})")
 
         logger.info("🎉 All tests passed! BitMar model is ready for evaluation.")
         return True
 
     except Exception as e:
         logger.error(f"❌ Model loading failed: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 if __name__ == "__main__":

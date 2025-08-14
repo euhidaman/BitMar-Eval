@@ -3,6 +3,7 @@
 Comprehensive Evaluation Script for BitMar Model
 Runs all specified benchmarks: ARC, OpenbookQA, BoolQ, HellaSwag, PIQA, WinoGrande,
 CommonsenseQA, TruthfulQA, TriviaQA, and MMLU
+Uses BitMar-specific adapter for proper model compatibility
 """
 
 import os
@@ -14,11 +15,19 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import torch
-from transformers import AutoModel, AutoTokenizer, AutoConfig
 from datasets import load_dataset
 import pandas as pd
 from datetime import datetime
 import traceback
+
+# Import BitMar adapter
+try:
+    from bitmar_adapter import create_bitmar_adapter
+    BITMAR_ADAPTER_AVAILABLE = True
+    print("✅ BitMar adapter available")
+except ImportError:
+    BITMAR_ADAPTER_AVAILABLE = False
+    print("❌ BitMar adapter not available")
 
 # Setup logging
 logging.basicConfig(
@@ -46,101 +55,48 @@ class BitMarEvaluator:
         logger.info(f"Device: {self.device}")
         logger.info(f"Batch size: {batch_size}")
 
-        # Load model and tokenizer
+        # Load model using BitMar adapter
         self.load_model()
 
     def load_model(self):
-        """Load BitMar model and tokenizer"""
+        """Load BitMar model using the specialized adapter"""
         try:
-            logger.info("Loading BitMar model and tokenizer...")
+            logger.info("Loading BitMar model using specialized adapter...")
 
-            # Load tokenizer
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
+            if not BITMAR_ADAPTER_AVAILABLE:
+                raise ImportError("BitMar adapter not available. Please ensure bitmar_adapter.py is in the same directory.")
 
-            # Load model
-            self.model = AutoModel.from_pretrained(
-                self.model_path,
-                torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
-                device_map="auto" if self.device.type == "cuda" else None,
-                trust_remote_code=True
+            # Create BitMar adapter
+            self.model_adapter = create_bitmar_adapter(
+                model_path=self.model_path,
+                device=str(self.device)
             )
 
-            if self.device.type != "cuda":
-                self.model = self.model.to(self.device)
+            # Get model info
+            model_info = self.model_adapter.get_model_info()
 
-            self.model.eval()
-
-            logger.info("✅ Model and tokenizer loaded successfully")
-            logger.info(f"Model device: {next(self.model.parameters()).device}")
+            logger.info("✅ BitMar model and adapter loaded successfully")
+            logger.info(f"Model type: {model_info.get('model_type', 'Unknown')}")
+            logger.info(f"Architecture: {model_info.get('architecture', 'Unknown')}")
+            logger.info(f"Total parameters: {model_info.get('total_parameters', 'Unknown'):,}" if isinstance(model_info.get('total_parameters'), int) else f"Total parameters: {model_info.get('total_parameters', 'Unknown')}")
+            logger.info(f"Model device: {model_info.get('model_device', 'Unknown')}")
 
         except Exception as e:
-            logger.error(f"❌ Failed to load model: {e}")
+            logger.error(f"❌ Failed to load BitMar model: {e}")
             raise
 
     def generate_response(self, prompt: str, max_length: int = 100, temperature: float = 0.1) -> str:
-        """Generate response from BitMar model"""
+        """Generate response from BitMar model using adapter"""
         try:
-            # Tokenize input
-            inputs = self.tokenizer(
-                prompt,
-                return_tensors="pt",
-                truncation=True,
-                max_length=512,
-                padding=True
-            ).to(self.device)
-
-            # Generate response
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    **inputs,
-                    max_length=inputs['input_ids'].shape[1] + max_length,
-                    temperature=temperature,
-                    do_sample=True if temperature > 0 else False,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id,
-                    num_return_sequences=1
-                )
-
-            # Decode response
-            response = self.tokenizer.decode(
-                outputs[0][inputs['input_ids'].shape[1]:],
-                skip_special_tokens=True
-            ).strip()
-
-            return response
-
+            return self.model_adapter.generate_response(prompt, max_length, temperature)
         except Exception as e:
             logger.warning(f"Generation failed for prompt: {prompt[:50]}... Error: {e}")
             return ""
 
     def evaluate_multiple_choice(self, prompt: str, choices: List[str]) -> int:
-        """Evaluate multiple choice question by comparing perplexities"""
+        """Evaluate multiple choice question using BitMar adapter"""
         try:
-            perplexities = []
-
-            for choice in choices:
-                full_text = f"{prompt}\nAnswer: {choice}"
-
-                # Tokenize
-                inputs = self.tokenizer(
-                    full_text,
-                    return_tensors="pt",
-                    truncation=True,
-                    max_length=512
-                ).to(self.device)
-
-                # Calculate perplexity
-                with torch.no_grad():
-                    outputs = self.model(**inputs, labels=inputs['input_ids'])
-                    loss = outputs.loss
-                    perplexity = torch.exp(loss).item()
-                    perplexities.append(perplexity)
-
-            # Return index of choice with lowest perplexity
-            return perplexities.index(min(perplexities))
-
+            return self.model_adapter.evaluate_multiple_choice(prompt, choices)
         except Exception as e:
             logger.warning(f"Multiple choice evaluation failed: {e}")
             return 0  # Default to first choice
