@@ -35,6 +35,32 @@ class BitMarEvaluationAdapter:
             logger.error(f"Failed to load BitMar model: {e}")
             raise
 
+    def _get_default_config(self):
+        """Get default BitMar configuration"""
+        return {
+            'model': {
+                'vocab_size': 50257,
+                'text_encoder_dim': 128,
+                'text_encoder_layers': 4,
+                'text_encoder_heads': 4,
+                'text_decoder_dim': 128,
+                'text_decoder_layers': 4,
+                'text_decoder_heads': 4,
+                'vision_encoder_dim': 768,
+                'vision_latent_size': 128,
+                'vision_hidden_size': 64,
+                'fusion_hidden_size': 128,
+                'fusion_num_heads': 4,
+                'fusion_num_layers': 2,
+                'memory_size': 32,
+                'episode_dim': 128,
+                'memory_alpha': 0.2,
+                'direct_writing': True,
+                'max_seq_len': 256,
+                'dropout': 0.15
+            }
+        }
+
     def _load_from_checkpoint(self):
         """Load model from local checkpoint"""
         checkpoint_path = Path(self.model_path)
@@ -86,74 +112,175 @@ class BitMarEvaluationAdapter:
     def _load_from_huggingface(self):
         """Load model from Hugging Face Hub"""
         try:
-            from transformers import AutoModel, AutoTokenizer, AutoConfig
-
             logger.info(f"Loading BitMar model from HF Hub: {self.model_path}")
 
-            # Try to load config first
+            # First, try to load the tokenizer separately (it should be standard GPT-2)
             try:
-                config = AutoConfig.from_pretrained(self.model_path, trust_remote_code=True)
-                logger.info("Config loaded from HF Hub")
-            except:
-                logger.warning("Could not load config from HF Hub, using default")
-                config = self._get_default_config()
+                from transformers import AutoTokenizer
 
-            # Load tokenizer
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
+                self.tokenizer = AutoTokenizer.from_pretrained("gpt2")  # Use GPT-2 tokenizer as fallback
+                if self.tokenizer.pad_token is None:
+                    self.tokenizer.pad_token = self.tokenizer.eos_token
+                logger.info("✅ Loaded GPT-2 tokenizer as fallback")
+            except Exception as e:
+                logger.error(f"Failed to load tokenizer: {e}")
+                raise
 
-            # Load model
-            self.model = AutoModel.from_pretrained(
-                self.model_path,
-                torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
-                device_map="auto" if self.device.type == "cuda" else None,
-                trust_remote_code=True
-            )
+            # Try to download model files manually and load as custom BitMar model
+            try:
+                from huggingface_hub import hf_hub_download
+                import json
 
-            if self.device.type != "cuda":
-                self.model = self.model.to(self.device)
+                # Download the config file to understand the model structure
+                try:
+                    config_path = hf_hub_download(repo_id=self.model_path, filename="config.json")
+                    with open(config_path, 'r') as f:
+                        hf_config = json.load(f)
+                    logger.info("✅ Downloaded config from HF Hub")
+                except Exception as e:
+                    logger.warning(f"Could not download config: {e}, using default")
+                    hf_config = {}
 
-            self.model.eval()
+                # Download the model weights
+                try:
+                    model_weights_path = hf_hub_download(repo_id=self.model_path, filename="pytorch_model.bin")
+                    logger.info("✅ Downloaded model weights from HF Hub")
+                except Exception as e:
+                    # Try alternative filename
+                    try:
+                        model_weights_path = hf_hub_download(repo_id=self.model_path, filename="model.safetensors")
+                        logger.info("✅ Downloaded model weights (safetensors) from HF Hub")
+                    except Exception as e2:
+                        logger.error(f"Failed to download model weights: {e}, {e2}")
+                        raise RuntimeError(f"Could not download model weights from {self.model_path}")
 
-            logger.info("✅ BitMar model loaded from HF Hub")
+                # Create BitMar model config from HF config or use defaults
+                bitmar_config = self._create_bitmar_config_from_hf(hf_config)
+
+                # Import BitMar model from the correct path
+                bitmar_src_path = str(Path(__file__).parent.parent / "BitMar" / "src")
+                if bitmar_src_path not in sys.path:
+                    sys.path.insert(0, bitmar_src_path)
+
+                try:
+                    from model import create_bitmar_model, BitMarModel
+                    logger.info("✅ Successfully imported BitMar model components")
+                except ImportError as e:
+                    logger.error(f"Failed to import BitMar model: {e}")
+                    logger.error(f"Tried importing from: {bitmar_src_path}")
+                    # Try alternative import paths
+                    alternative_paths = [
+                        str(Path(__file__).parent.parent.parent / "BitMar" / "src"),
+                        str(Path(__file__).parent / ".." / "BitMar" / "src"),
+                        "/workspace/BitMar/src"
+                    ]
+
+                    for alt_path in alternative_paths:
+                        if Path(alt_path).exists():
+                            logger.info(f"Trying alternative path: {alt_path}")
+                            if alt_path not in sys.path:
+                                sys.path.insert(0, alt_path)
+                            try:
+                                from model import create_bitmar_model, BitMarModel
+                                logger.info(f"✅ Successfully imported from: {alt_path}")
+                                break
+                            except ImportError:
+                                continue
+                    else:
+                        raise ImportError(f"Could not import BitMar model from any path. Available paths checked: {[bitmar_src_path] + alternative_paths}")
+
+                # Create BitMar model using your custom architecture
+                self.model = create_bitmar_model(bitmar_config)
+
+                # Load the state dict
+                if model_weights_path.endswith('.safetensors'):
+                    from safetensors.torch import load_file
+                    state_dict = load_file(model_weights_path)
+                else:
+                    state_dict = torch.load(model_weights_path, map_location='cpu')
+
+                # Handle different state dict formats
+                if isinstance(state_dict, dict) and 'model_state_dict' in state_dict:
+                    model_state_dict = state_dict['model_state_dict']
+                else:
+                    model_state_dict = state_dict
+
+                # Load state dict with error handling for mismatched keys
+                try:
+                    self.model.load_state_dict(model_state_dict, strict=False)
+                    logger.info("✅ Loaded model weights (non-strict)")
+                except Exception as e:
+                    logger.warning(f"Failed to load some weights: {e}")
+                    # Try to load compatible weights only
+                    model_dict = self.model.state_dict()
+                    filtered_dict = {k: v for k, v in model_state_dict.items() if k in model_dict and model_dict[k].shape == v.shape}
+                    model_dict.update(filtered_dict)
+                    self.model.load_state_dict(model_dict)
+                    logger.info(f"✅ Loaded {len(filtered_dict)}/{len(model_state_dict)} compatible weights")
+
+                # Move to device
+                self.model.to(self.device)
+                self.model.eval()
+
+                logger.info("✅ BitMar model loaded from HF Hub using custom loading")
+                return
+
+            except Exception as e:
+                logger.error(f"Custom loading failed: {e}")
+                raise
 
         except Exception as e:
             logger.error(f"Failed to load from HF Hub: {e}")
             # Fallback to checkpoint loading if HF fails
-            checkpoint_path = Path("checkpoints_100M_dataset") / "latest_checkpoint.pt"
-            if checkpoint_path.exists():
-                logger.info("Falling back to local checkpoint")
-                self.model_path = str(checkpoint_path)
-                self._load_from_checkpoint()
-            else:
-                raise RuntimeError(f"Could not load model from {self.model_path} and no local checkpoint found")
+            checkpoint_paths = [
+                Path("/workspace/BitMar/checkpoints_100M_dataset") / "latest_checkpoint.pt",
+                Path("../BitMar/checkpoints_100M_dataset") / "latest_checkpoint.pt",
+                Path("checkpoints_100M_dataset") / "latest_checkpoint.pt",
+                Path("latest_checkpoint.pt")
+            ]
 
-    def _get_default_config(self):
-        """Get default BitMar configuration"""
-        return {
-            'model': {
-                'vocab_size': 50257,
-                'text_encoder_dim': 128,
-                'text_encoder_layers': 4,
-                'text_encoder_heads': 4,
-                'text_decoder_dim': 128,
-                'text_decoder_layers': 4,
-                'text_decoder_heads': 4,
-                'vision_encoder_dim': 768,
-                'vision_latent_size': 128,
-                'vision_hidden_size': 64,
-                'fusion_hidden_size': 128,
-                'fusion_num_heads': 4,
-                'fusion_num_layers': 2,
-                'memory_size': 32,
-                'episode_dim': 128,
-                'memory_alpha': 0.2,
-                'direct_writing': True,
-                'max_seq_len': 256,
-                'dropout': 0.15
-            }
+            for checkpoint_path in checkpoint_paths:
+                if checkpoint_path.exists():
+                    logger.info(f"Falling back to local checkpoint: {checkpoint_path}")
+                    self.model_path = str(checkpoint_path)
+                    self._load_from_checkpoint()
+                    return
+
+            raise RuntimeError(f"Could not load model from {self.model_path} and no local checkpoint found")
+
+    def _create_bitmar_config_from_hf(self, hf_config: dict) -> dict:
+        """Create BitMar config from HuggingFace config or use defaults"""
+        # Extract known BitMar parameters from HF config
+        bitmar_config = self._get_default_config()['model'].copy()
+
+        # Map HF config keys to BitMar config keys
+        key_mapping = {
+            'vocab_size': 'vocab_size',
+            'text_encoder_dim': 'text_encoder_dim',
+            'text_encoder_layers': 'text_encoder_layers',
+            'text_encoder_heads': 'text_encoder_heads',
+            'text_decoder_dim': 'text_decoder_dim',
+            'text_decoder_layers': 'text_decoder_layers',
+            'text_decoder_heads': 'text_decoder_heads',
+            'vision_encoder_dim': 'vision_encoder_dim',
+            'vision_latent_size': 'vision_latent_size',
+            'vision_hidden_size': 'vision_hidden_size',
+            'fusion_hidden_size': 'fusion_hidden_size',
+            'fusion_num_heads': 'fusion_num_heads',
+            'fusion_num_layers': 'fusion_num_layers',
+            'memory_size': 'memory_size',
+            'episode_dim': 'episode_dim',
+            'max_seq_len': 'max_seq_len',
+            'dropout': 'dropout'
         }
+
+        # Update config with values from HF config
+        for hf_key, bitmar_key in key_mapping.items():
+            if hf_key in hf_config:
+                bitmar_config[bitmar_key] = hf_config[hf_key]
+
+        logger.info(f"Created BitMar config with vocab_size={bitmar_config['vocab_size']}, text_dim={bitmar_config['text_encoder_dim']}")
+        return bitmar_config
 
     def generate_response(self, prompt: str, max_length: int = 100, temperature: float = 0.1) -> str:
         """Generate response using BitMar model"""
