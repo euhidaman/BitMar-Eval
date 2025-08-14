@@ -19,7 +19,6 @@ seaborn>=0.11.0
 sacrebleu>=2.3.0
 rouge_score>=0.1.2
 bert_score>=0.3.13
-bleurt>=0.0.1
 
 # For model loading and inference
 safetensors>=0.3.0
