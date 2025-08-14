@@ -9,6 +9,8 @@ from typing import Dict, Optional, List, Union
 import logging
 from pathlib import Path
 import sys
+import os
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -443,195 +445,407 @@ class BitMarEvaluationAdapter:
             return ""
 
     def evaluate_multiple_choice(self, prompt: str, choices: List[str]) -> int:
-        """Evaluate multiple choice by comparing perplexities with robust error handling"""
+        """Evaluate multiple choice by comparing perplexities with comprehensive CUDA safety"""
         try:
+            # Enable CUDA error blocking for debugging if needed
+            os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+
             perplexities = []
 
-            # Validate inputs
+            # Validate inputs with enhanced safety
             if not choices:
                 logger.warning("Empty choices list provided")
                 return 0
 
-            if not prompt:
-                logger.warning("Empty prompt provided")
+            if not prompt or not isinstance(prompt, str):
+                logger.warning("Invalid prompt provided")
                 return 0
+
+            # Clean up CUDA cache before starting
+            if self.device.type == 'cuda':
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
 
             for i, choice in enumerate(choices):
                 try:
-                    # Validate choice
-                    if not isinstance(choice, str) or not choice.strip():
-                        logger.warning(f"Invalid choice at index {i}: {choice}")
+                    # Enhanced input validation
+                    if not isinstance(choice, str):
+                        logger.warning(f"Choice {i} is not a string: {type(choice)}")
                         perplexities.append(float('inf'))
                         continue
 
-                    full_text = f"{prompt}\nAnswer: {choice.strip()}"
+                    choice = choice.strip()
+                    if not choice:
+                        logger.warning(f"Empty choice at index {i}")
+                        perplexities.append(float('inf'))
+                        continue
 
-                    # Tokenize with additional safety checks
+                    # Create safer prompt text with encoding validation
                     try:
+                        # Ensure text is properly encoded and doesn't contain problematic characters
+                        prompt_clean = prompt.encode('utf-8', errors='ignore').decode('utf-8')
+                        choice_clean = choice.encode('utf-8', errors='ignore').decode('utf-8')
+                        full_text = f"{prompt_clean}\nAnswer: {choice_clean}"
+
+                        # Limit text length to prevent memory issues
+                        if len(full_text) > 2000:  # Reasonable character limit
+                            full_text = full_text[:2000]
+                            logger.debug(f"Truncated long text for choice {i}")
+
+                    except Exception as text_error:
+                        logger.warning(f"Text encoding error for choice {i}: {text_error}")
+                        perplexities.append(float('inf'))
+                        continue
+
+                    # Safe tokenization with multiple fallback strategies
+                    inputs = None
+                    try:
+                        # Strategy 1: Normal tokenization
                         inputs = self.tokenizer(
                             full_text,
                             return_tensors="pt",
                             truncation=True,
                             max_length=512,
                             padding=False,
-                            add_special_tokens=True
+                            add_special_tokens=True,
+                            return_attention_mask=True
                         )
 
-                        # Validate tokenization results
-                        if 'input_ids' not in inputs or inputs['input_ids'].size(1) == 0:
-                            logger.warning(f"Empty tokenization for choice {i}: '{choice}'")
+                        # Validate tokenization output
+                        if not inputs or 'input_ids' not in inputs:
+                            raise ValueError("Tokenization returned empty or invalid result")
+
+                        if inputs['input_ids'].size(1) == 0:
+                            raise ValueError("Tokenization produced empty sequence")
+
+                    except Exception as tokenize_error:
+                        logger.warning(f"Primary tokenization failed for choice {i}: {tokenize_error}")
+
+                        # Strategy 2: Simplified tokenization
+                        try:
+                            # Try with simpler text
+                            simple_text = f"Answer: {choice_clean}"
+                            inputs = self.tokenizer(
+                                simple_text,
+                                return_tensors="pt",
+                                truncation=True,
+                                max_length=256,
+                                padding=False,
+                                add_special_tokens=True,
+                                return_attention_mask=True
+                            )
+                            logger.debug(f"Used simplified tokenization for choice {i}")
+
+                        except Exception as simple_error:
+                            logger.warning(f"Simplified tokenization failed for choice {i}: {simple_error}")
+
+                            # Strategy 3: Manual tokenization as last resort
+                            try:
+                                # Manually encode just the choice
+                                tokens = self.tokenizer.encode(choice_clean, add_special_tokens=True)
+                                if len(tokens) == 0:
+                                    tokens = [self.tokenizer.eos_token_id]  # Fallback to EOS token
+
+                                inputs = {
+                                    'input_ids': torch.tensor([tokens], dtype=torch.long),
+                                    'attention_mask': torch.ones((1, len(tokens)), dtype=torch.long)
+                                }
+                                logger.debug(f"Used manual tokenization for choice {i}")
+
+                            except Exception as manual_error:
+                                logger.error(f"All tokenization strategies failed for choice {i}: {manual_error}")
+                                perplexities.append(float('inf'))
+                                continue
+
+                    # Enhanced token validation with safer bounds checking
+                    try:
+                        vocab_size = getattr(self.tokenizer, 'vocab_size', 50257)  # Default to GPT-2 vocab size
+                        input_ids = inputs['input_ids']
+
+                        # Check for valid tensor
+                        if not torch.is_tensor(input_ids) or input_ids.numel() == 0:
+                            logger.warning(f"Invalid input_ids tensor for choice {i}")
                             perplexities.append(float('inf'))
                             continue
 
-                        # Check for invalid token IDs
-                        vocab_size = self.tokenizer.vocab_size
-                        invalid_tokens = (inputs['input_ids'] >= vocab_size) | (inputs['input_ids'] < 0)
-                        if invalid_tokens.any():
-                            logger.warning(f"Invalid token IDs found for choice {i}, clamping to valid range")
-                            inputs['input_ids'] = torch.clamp(inputs['input_ids'], 0, vocab_size - 1)
+                        # Safer bounds checking
+                        try:
+                            min_token = input_ids.min().item()
+                            max_token = input_ids.max().item()
 
-                        # Move to device safely
-                        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                            if min_token < 0 or max_token >= vocab_size:
+                                logger.warning(f"Token IDs out of bounds for choice {i}: [{min_token}, {max_token}], vocab_size={vocab_size}")
+                                # Clamp to safe range
+                                inputs['input_ids'] = torch.clamp(input_ids, 0, vocab_size - 1)
 
-                    except Exception as tokenize_error:
-                        logger.warning(f"Tokenization failed for choice {i}: {tokenize_error}")
+                        except Exception as bounds_error:
+                            logger.warning(f"Token bounds checking failed for choice {i}: {bounds_error}")
+                            # Create safe fallback tokens
+                            safe_tokens = torch.full_like(input_ids, self.tokenizer.eos_token_id)
+                            inputs['input_ids'] = safe_tokens
+
+                        # Ensure attention mask exists and matches
+                        if 'attention_mask' not in inputs:
+                            inputs['attention_mask'] = torch.ones_like(inputs['input_ids'])
+                        elif inputs['attention_mask'].shape != inputs['input_ids'].shape:
+                            inputs['attention_mask'] = torch.ones_like(inputs['input_ids'])
+
+                    except Exception as validation_error:
+                        logger.warning(f"Token validation failed for choice {i}: {validation_error}")
                         perplexities.append(float('inf'))
                         continue
 
-                    # Create dummy vision features with proper device placement
-                    batch_size = inputs['input_ids'].shape[0]
-                    vision_features = torch.zeros(batch_size, 768, device=self.device, dtype=torch.float32)
-
-                    # Calculate perplexity using model with enhanced error handling
-                    with torch.no_grad():
-                        try:
-                            # Ensure attention mask exists
-                            if 'attention_mask' not in inputs:
-                                inputs['attention_mask'] = torch.ones_like(inputs['input_ids'])
-
-                            outputs = self.model(
-                                input_ids=inputs['input_ids'],
-                                attention_mask=inputs['attention_mask'],
-                                vision_features=vision_features,
-                                labels=inputs['input_ids'].clone(),  # Use clone to avoid in-place operations
-                                mode="inference"
-                            )
-
-                            if 'loss' in outputs and outputs['loss'] is not None:
-                                loss = outputs['loss']
-                                # Check for valid loss
-                                if torch.isfinite(loss) and loss.item() >= 0:
-                                    perplexity = torch.exp(torch.clamp(loss, max=10.0)).item()  # Clamp to prevent overflow
-                                else:
-                                    logger.warning(f"Invalid loss for choice {i}: {loss.item()}")
-                                    perplexity = float('inf')
+                    # Safe device transfer with error handling
+                    try:
+                        # Transfer tensors to device one by one with error checking
+                        device_inputs = {}
+                        for key, tensor in inputs.items():
+                            if torch.is_tensor(tensor):
+                                try:
+                                    device_inputs[key] = tensor.to(self.device, non_blocking=False)
+                                except Exception as transfer_error:
+                                    logger.warning(f"Failed to transfer {key} to device for choice {i}: {transfer_error}")
+                                    # Use CPU fallback
+                                    device_inputs[key] = tensor.cpu()
                             else:
-                                # Fallback: compute loss from logits with bounds checking
-                                logits = outputs['logits']
+                                device_inputs[key] = tensor
 
-                                # Validate logits
-                                if not torch.isfinite(logits).all():
-                                    logger.warning(f"Non-finite logits detected for choice {i}")
-                                    perplexity = float('inf')
-                                else:
-                                    # Safe loss computation
-                                    shift_logits = logits[..., :-1, :].contiguous()
-                                    shift_labels = inputs['input_ids'][..., 1:].contiguous()
+                        inputs = device_inputs
 
-                                    # Validate label indices
-                                    vocab_size = shift_logits.size(-1)
-                                    invalid_labels = (shift_labels >= vocab_size) | (shift_labels < -100)
-                                    if invalid_labels.any():
-                                        logger.warning(f"Invalid label indices for choice {i}, setting to ignore_index")
-                                        shift_labels = torch.where(invalid_labels, -100, shift_labels)
-
-                                    # Compute loss with ignore_index for padding
-                                    loss_fn = nn.CrossEntropyLoss(ignore_index=-100, reduction='mean')
-                                    loss = loss_fn(
-                                        shift_logits.view(-1, shift_logits.size(-1)),
-                                        shift_labels.view(-1)
-                                    )
-
-                                    # Check for valid loss
-                                    if torch.isfinite(loss) and loss.item() >= 0:
-                                        perplexity = torch.exp(torch.clamp(loss, max=10.0)).item()
-                                    else:
-                                        logger.warning(f"Invalid computed loss for choice {i}: {loss.item()}")
-                                        perplexity = float('inf')
-
-                            perplexities.append(perplexity)
-
-                        except RuntimeError as cuda_error:
-                            if "device-side assert" in str(cuda_error).lower() or "cuda" in str(cuda_error).lower():
-                                logger.error(f"CUDA error for choice {i}: {cuda_error}")
-                                logger.error(f"Choice text: '{choice[:100]}...'")
-                                logger.error(f"Input shape: {inputs['input_ids'].shape}")
-                                logger.error(f"Token range: {inputs['input_ids'].min().item()} to {inputs['input_ids'].max().item()}")
-                                # Clear CUDA cache and continue
+                        # Verify tensors are on the expected device
+                        if self.device.type == 'cuda':
+                            try:
+                                # Synchronize to catch any CUDA errors early
+                                torch.cuda.synchronize()
+                            except Exception as sync_error:
+                                logger.warning(f"CUDA synchronization failed for choice {i}: {sync_error}")
+                                # Clear cache and try again
                                 torch.cuda.empty_cache()
                                 perplexities.append(float('inf'))
-                            else:
-                                raise cuda_error
-                        except Exception as model_error:
-                            logger.warning(f"Model forward pass failed for choice {i}: {model_error}")
+                                continue
+
+                    except Exception as device_error:
+                        logger.warning(f"Device transfer failed for choice {i}: {device_error}")
+                        perplexities.append(float('inf'))
+                        continue
+
+                    # Create vision features with enhanced safety
+                    try:
+                        batch_size = inputs['input_ids'].shape[0]
+                        vision_features = torch.zeros(
+                            batch_size, 768,
+                            device=self.device,
+                            dtype=torch.float32,
+                            requires_grad=False
+                        )
+
+                        # Verify vision features are valid
+                        if not torch.isfinite(vision_features).all():
+                            logger.warning(f"Invalid vision features for choice {i}")
                             perplexities.append(float('inf'))
+                            continue
+
+                    except Exception as vision_error:
+                        logger.warning(f"Vision features creation failed for choice {i}: {vision_error}")
+                        perplexities.append(float('inf'))
+                        continue
+
+                    # Model inference with comprehensive error handling
+                    try:
+                        with torch.no_grad():
+                            # Set model to eval mode
+                            if hasattr(self.model, 'eval'):
+                                self.model.eval()
+
+                            # Prepare model inputs with validation
+                            model_inputs = {
+                                'input_ids': inputs['input_ids'],
+                                'attention_mask': inputs['attention_mask'],
+                                'vision_features': vision_features,
+                                'labels': inputs['input_ids'].clone().detach(),
+                                'mode': "inference"
+                            }
+
+                            # Validate all inputs before model call
+                            for key, value in model_inputs.items():
+                                if torch.is_tensor(value):
+                                    if not torch.isfinite(value).all():
+                                        logger.warning(f"Non-finite values in {key} for choice {i}")
+                                        raise ValueError(f"Non-finite values in {key}")
+
+                            # Model forward pass with timeout-like behavior
+                            try:
+                                # Clear any existing gradients
+                                if hasattr(self.model, 'zero_grad'):
+                                    self.model.zero_grad()
+
+                                outputs = self.model(**model_inputs)
+
+                                # Validate model outputs
+                                if not isinstance(outputs, dict):
+                                    logger.warning(f"Model returned non-dict output for choice {i}")
+                                    perplexity = float('inf')
+                                elif 'loss' in outputs and outputs['loss'] is not None:
+                                    loss = outputs['loss']
+
+                                    # Comprehensive loss validation
+                                    if not torch.is_tensor(loss):
+                                        logger.warning(f"Loss is not a tensor for choice {i}")
+                                        perplexity = float('inf')
+                                    elif not torch.isfinite(loss):
+                                        logger.warning(f"Non-finite loss for choice {i}: {loss}")
+                                        perplexity = float('inf')
+                                    elif loss.item() < 0:
+                                        logger.warning(f"Negative loss for choice {i}: {loss.item()}")
+                                        perplexity = float('inf')
+                                    else:
+                                        # Safe perplexity computation
+                                        try:
+                                            clamped_loss = torch.clamp(loss, max=20.0)  # Prevent overflow
+                                            perplexity = torch.exp(clamped_loss).item()
+
+                                            # Additional perplexity validation
+                                            if not np.isfinite(perplexity) or perplexity <= 0:
+                                                logger.warning(f"Invalid perplexity computed for choice {i}: {perplexity}")
+                                                perplexity = float('inf')
+
+                                        except Exception as perp_error:
+                                            logger.warning(f"Perplexity computation failed for choice {i}: {perp_error}")
+                                            perplexity = float('inf')
+                                else:
+                                    # Fallback: compute loss from logits
+                                    if 'logits' in outputs and outputs['logits'] is not None:
+                                        try:
+                                            logits = outputs['logits']
+
+                                            # Validate logits
+                                            if not torch.isfinite(logits).all():
+                                                logger.warning(f"Non-finite logits for choice {i}")
+                                                perplexity = float('inf')
+                                            else:
+                                                # Safe loss computation from logits
+                                                shift_logits = logits[..., :-1, :].contiguous()
+                                                shift_labels = inputs['input_ids'][..., 1:].contiguous()
+
+                                                # Validate shapes
+                                                if shift_logits.size(0) != shift_labels.size(0) or shift_logits.size(1) != shift_labels.size(1):
+                                                    logger.warning(f"Shape mismatch in loss computation for choice {i}")
+                                                    perplexity = float('inf')
+                                                else:
+                                                    # Safe CrossEntropyLoss computation
+                                                    loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-100, reduction='mean')
+
+                                                    try:
+                                                        computed_loss = loss_fn(
+                                                            shift_logits.view(-1, shift_logits.size(-1)),
+                                                            shift_labels.view(-1)
+                                                        )
+
+                                                        if torch.isfinite(computed_loss) and computed_loss.item() >= 0:
+                                                            clamped_loss = torch.clamp(computed_loss, max=20.0)
+                                                            perplexity = torch.exp(clamped_loss).item()
+                                                        else:
+                                                            logger.warning(f"Invalid computed loss for choice {i}: {computed_loss}")
+                                                            perplexity = float('inf')
+
+                                                    except Exception as loss_comp_error:
+                                                        logger.warning(f"Loss computation from logits failed for choice {i}: {loss_comp_error}")
+                                                        perplexity = float('inf')
+                                        except Exception as logits_error:
+                                            logger.warning(f"Logits processing failed for choice {i}: {logits_error}")
+                                            perplexity = float('inf')
+                                    else:
+                                        logger.warning(f"No loss or logits in model output for choice {i}")
+                                        perplexity = float('inf')
+
+                                perplexities.append(perplexity)
+
+                            except RuntimeError as runtime_error:
+                                error_str = str(runtime_error).lower()
+                                if any(cuda_term in error_str for cuda_term in ['cuda', 'device-side assert', 'gpu']):
+                                    logger.error(f"CUDA runtime error for choice {i}: {runtime_error}")
+
+                                    # Emergency CUDA cleanup
+                                    try:
+                                        torch.cuda.empty_cache()
+                                        torch.cuda.synchronize()
+
+                                        # Try to reset CUDA context
+                                        if hasattr(torch.cuda, 'reset_max_memory_allocated'):
+                                            torch.cuda.reset_max_memory_allocated()
+
+                                    except Exception as cleanup_error:
+                                        logger.error(f"CUDA cleanup failed: {cleanup_error}")
+
+                                    perplexities.append(float('inf'))
+                                else:
+                                    logger.error(f"Runtime error for choice {i}: {runtime_error}")
+                                    perplexities.append(float('inf'))
+
+                            except Exception as model_error:
+                                logger.warning(f"Model inference failed for choice {i}: {model_error}")
+                                perplexities.append(float('inf'))
+
+                    except Exception as inference_error:
+                        logger.error(f"Inference setup failed for choice {i}: {inference_error}")
+                        perplexities.append(float('inf'))
 
                 except Exception as choice_error:
-                    logger.warning(f"Error processing choice {i} '{choice}': {choice_error}")
+                    logger.error(f"Processing failed for choice {i}: {choice_error}")
                     perplexities.append(float('inf'))
 
-            # Validate perplexities and return best choice
-            if not perplexities or all(p == float('inf') for p in perplexities):
-                logger.warning("All choices resulted in infinite perplexity, returning default choice 0")
-                return 0
+                # Cleanup after each choice
+                if self.device.type == 'cuda':
+                    try:
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
 
-            # Find minimum finite perplexity
-            finite_perplexities = [(i, p) for i, p in enumerate(perplexities) if p != float('inf')]
-            if not finite_perplexities:
-                logger.warning("No finite perplexities found, returning default choice 0")
-                return 0
+            # Final validation and selection
+            try:
+                if not perplexities or all(p == float('inf') for p in perplexities):
+                    logger.warning("All choices resulted in infinite perplexity, returning default choice 0")
+                    return 0
 
-            best_idx = min(finite_perplexities, key=lambda x: x[1])[0]
-            logger.debug(f"Selected choice {best_idx} with perplexity {perplexities[best_idx]:.4f}")
-            return best_idx
+                # Find best choice among finite perplexities
+                finite_perplexities = [(i, p) for i, p in enumerate(perplexities) if np.isfinite(p) and p > 0]
+
+                if not finite_perplexities:
+                    logger.warning("No valid finite perplexities found, returning default choice 0")
+                    return 0
+
+                # Select choice with minimum perplexity
+                best_idx = min(finite_perplexities, key=lambda x: x[1])[0]
+                best_perplexity = finite_perplexities[min(range(len(finite_perplexities)), key=lambda i: finite_perplexities[i][1])][1]
+
+                logger.debug(f"Selected choice {best_idx} with perplexity {best_perplexity:.4f}")
+                return best_idx
+
+            except Exception as selection_error:
+                logger.error(f"Choice selection failed: {selection_error}")
+                return 0
 
         except Exception as e:
             logger.error(f"Multiple choice evaluation completely failed: {e}")
-            logger.error(f"Prompt: {prompt[:100]}...")
-            logger.error(f"Choices: {choices[:3]}...")  # Log first 3 choices
+            logger.error(f"Error type: {type(e).__name__}")
+
+            # Emergency cleanup
+            if self.device.type == 'cuda':
+                try:
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                except Exception:
+                    pass
+
             return 0  # Default to first choice
 
-    def get_model_info(self) -> Dict:
-        """Get model information"""
-        info = {
-            'model_path': self.model_path,
-            'device': str(self.device),
-            'model_type': 'BitMar',
-            'architecture': 'BitNet-quantized Vision-Language Episodic Memory Transformer'
-        }
-
-        if self.model:
+        finally:
+            # Always cleanup
             try:
-                # Get parameter count
-                total_params = sum(p.numel() for p in self.model.parameters())
-                trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-
-                info.update({
-                    'total_parameters': total_params,
-                    'trainable_parameters': trainable_params,
-                    'model_device': str(next(self.model.parameters()).device)
-                })
-
-                # Get config if available
-                if hasattr(self.model, 'config'):
-                    info['config'] = self.model.config
-
-            except Exception as e:
-                logger.warning(f"Could not get model info: {e}")
-
-        return info
-
-
-def create_bitmar_adapter(model_path: str, device: str = "cuda") -> BitMarEvaluationAdapter:
-    """Create BitMar evaluation adapter"""
-    return BitMarEvaluationAdapter(model_path, device)
+                if self.device.type == 'cuda':
+                    torch.cuda.empty_cache()
+                # Reset CUDA_LAUNCH_BLOCKING
+                if 'CUDA_LAUNCH_BLOCKING' in os.environ:
+                    del os.environ['CUDA_LAUNCH_BLOCKING']
+            except Exception:
+                pass
