@@ -493,4 +493,32 @@ def download_mmlu_alternative(dataset_name, config, cache_dir):
                     try:
                         split_data = []
                         for i, item in enumerate(dataset[split]):
+                            split_data.append(item)
+                            if i >= 100:  # Limit for performance
+                                break
+
+                        if split_data:
+                            splits_data[split] = Dataset.from_list(split_data)
+                    except:
+                        continue
+
+                if splits_data:
+                    final_dataset = DatasetDict(splits_data)
+
+                    # Save to cache
+                    if cache_dir:
+                        cache_path = Path(cache_dir) / f"cais--mmlu__{config}"
+                        cache_path.mkdir(parents=True, exist_ok=True)
+                        final_dataset.save_to_disk(str(cache_path))
+
+                    logger.info(f"✅ MMLU {config} downloaded successfully with streaming")
+                    return True
+
+            except Exception as e2:
+                logger.error(f"All MMLU alternative methods failed for {config}: {e1}, {e2}")
+                return False
+
+    except Exception as e:
+        logger.error(f"❌ MMLU alternative download failed for {config}: {e}")
+        return False
 
