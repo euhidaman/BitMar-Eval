@@ -624,6 +624,76 @@ def verify_datasets(cache_dir=None):
 
     for dataset_name, config, split in verification_list:
         try:
+            # First try to load from cache
+            if cache_dir:
+                # Check if dataset exists in cache directory
+                cache_path = Path(cache_dir)
+
+                # Try different cache naming conventions
+                possible_cache_names = [
+                    dataset_name,
+                    dataset_name.replace('/', '--'),
+                    f"{dataset_name.replace('/', '--')}__{config}" if config else None,
+                    f"Rowan--{dataset_name}" if dataset_name == "hellaswag" else None,
+                    f"ybisk--{dataset_name}" if dataset_name == "piqa" else None
+                ]
+
+                # Remove None values
+                possible_cache_names = [name for name in possible_cache_names if name is not None]
+
+                dataset_found = False
+                cached_dataset = None
+
+                for cache_name in possible_cache_names:
+                    cached_path = cache_path / cache_name
+                    if cached_path.exists() and cached_path.is_dir():
+                        try:
+                            # Try to load the cached dataset
+                            from datasets import load_from_disk
+                            cached_dataset = load_from_disk(str(cached_path))
+
+                            # Check if the dataset has the required split
+                            if isinstance(cached_dataset, dict):  # DatasetDict
+                                if split in cached_dataset:
+                                    sample_count = len(cached_dataset[split])
+                                    logger.info(f"✅ {dataset_name}" + (f" ({config})" if config else "") + f" - {sample_count} samples")
+                                    verified_count += 1
+                                    dataset_found = True
+                                    break
+                                else:
+                                    # Try alternative split names
+                                    alternative_splits = {
+                                        'validation': ['val', 'dev', 'valid'],
+                                        'test': ['testing'],
+                                        'train': ['training']
+                                    }
+
+                                    if split in alternative_splits:
+                                        for alt_split in alternative_splits[split]:
+                                            if alt_split in cached_dataset:
+                                                sample_count = len(cached_dataset[alt_split])
+                                                logger.info(f"✅ {dataset_name}" + (f" ({config})" if config else "") + f" - {sample_count} samples (using {alt_split} split)")
+                                                verified_count += 1
+                                                dataset_found = True
+                                                break
+
+                                    if dataset_found:
+                                        break
+                            else:  # Single dataset
+                                sample_count = len(cached_dataset)
+                                logger.info(f"✅ {dataset_name}" + (f" ({config})" if config else "") + f" - {sample_count} samples")
+                                verified_count += 1
+                                dataset_found = True
+                                break
+
+                        except Exception as cache_error:
+                            logger.debug(f"Failed to load cached dataset from {cached_path}: {cache_error}")
+                            continue
+
+                if dataset_found:
+                    continue
+
+            # Fallback to standard loading if cache loading failed
             if config:
                 dataset = load_dataset(dataset_name, config, split=split, cache_dir=cache_dir)
             else:
@@ -635,26 +705,68 @@ def verify_datasets(cache_dir=None):
         except Exception as e:
             logger.error(f"❌ Failed to verify {dataset_name}: {e}")
 
-    # Verify MMLU
+    # Verify MMLU with improved cache checking
     try:
-        from datasets import get_dataset_config_names
-        subjects = get_dataset_config_names("cais/mmlu")
-        mmlu_verified = 0
+        mmlu_verified = False
 
-        for subject in subjects[:5]:  # Check first 5 subjects
-            try:
-                dataset = load_dataset("cais/mmlu", subject, split="test", cache_dir=cache_dir)
-                mmlu_verified += 1
-            except:
-                break
+        if cache_dir:
+            # Check for MMLU cache directories
+            cache_path = Path(cache_dir)
+            mmlu_cache_patterns = [
+                "cais--mmlu__*",
+                "mmlu__*",
+                "cais-mmlu*",
+                "mmlu*"
+            ]
 
-        if mmlu_verified == 5:
-            logger.info(f"✅ MMLU - verified {len(subjects)} subjects available")
-            verified_count += 1
-            total_count += 1
-        else:
-            logger.error(f"❌ MMLU verification failed")
-            total_count += 1
+            mmlu_subjects_found = []
+            for pattern in mmlu_cache_patterns:
+                mmlu_dirs = list(cache_path.glob(pattern))
+                for mmlu_dir in mmlu_dirs:
+                    if mmlu_dir.is_dir():
+                        try:
+                            from datasets import load_from_disk
+                            cached_mmlu = load_from_disk(str(mmlu_dir))
+
+                            # Check if it has test split
+                            if isinstance(cached_mmlu, dict) and 'test' in cached_mmlu:
+                                subject_name = mmlu_dir.name.split('__')[-1] if '__' in mmlu_dir.name else mmlu_dir.name
+                                mmlu_subjects_found.append(subject_name)
+                            elif not isinstance(cached_mmlu, dict):
+                                # Single dataset, assume it's a valid MMLU subject
+                                subject_name = mmlu_dir.name.split('__')[-1] if '__' in mmlu_dir.name else mmlu_dir.name
+                                mmlu_subjects_found.append(subject_name)
+
+                        except Exception as mmlu_cache_error:
+                            logger.debug(f"Failed to load MMLU cache from {mmlu_dir}: {mmlu_cache_error}")
+                            continue
+
+            if mmlu_subjects_found:
+                logger.info(f"✅ MMLU - found {len(mmlu_subjects_found)} cached subjects")
+                verified_count += 1
+                total_count += 1
+                mmlu_verified = True
+
+        if not mmlu_verified:
+            # Fallback to standard MMLU verification
+            from datasets import get_dataset_config_names
+            subjects = get_dataset_config_names("cais/mmlu")
+            mmlu_verified_count = 0
+
+            for subject in subjects[:5]:  # Check first 5 subjects
+                try:
+                    dataset = load_dataset("cais/mmlu", subject, split="test", cache_dir=cache_dir)
+                    mmlu_verified_count += 1
+                except:
+                    break
+
+            if mmlu_verified_count == 5:
+                logger.info(f"✅ MMLU - verified {len(subjects)} subjects available")
+                verified_count += 1
+                total_count += 1
+            else:
+                logger.error(f"❌ MMLU verification failed")
+                total_count += 1
 
     except Exception as e:
         logger.error(f"❌ MMLU verification failed: {e}")
