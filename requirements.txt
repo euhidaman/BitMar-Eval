@@ -1,0 +1,26 @@
+# Requirements for BitMar Evaluation
+torch>=2.0.0
+transformers>=4.30.0
+datasets>=2.12.0
+accelerate>=0.20.0
+evaluate>=0.4.0
+lm-eval>=0.4.2
+huggingface_hub>=0.15.0
+numpy>=1.21.0
+pandas>=1.5.0
+scikit-learn>=1.2.0
+tqdm>=4.64.0
+wandb>=0.15.0
+requests>=2.28.0
+matplotlib>=3.6.0
+seaborn>=0.11.0
+
+# For specific benchmarks
+sacrebleu>=2.3.0
+rouge_score>=0.1.2
+bert_score>=0.3.13
+bleurt>=0.0.1
+
+# For model loading and inference
+safetensors>=0.3.0
+tokenizers>=0.13.0
