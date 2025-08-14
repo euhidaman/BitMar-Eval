@@ -5,12 +5,13 @@ Handles the complex BitMar architecture for evaluation compatibility
 
 import torch
 import torch.nn as nn
-from typing import Dict, Optional, List, Union
+from typing import Dict, Optional, List
 import logging
 from pathlib import Path
 import sys
 import os
 import numpy as np
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -746,9 +747,31 @@ class BitMarEvaluationAdapter:
                             'mode': "inference"
                         }
 
-                        # Validate all model inputs
+                        # Ensure ALL model inputs are on the same device
                         for key, value in model_inputs.items():
                             if torch.is_tensor(value):
+                                try:
+                                    # Force all tensors to the model's device
+                                    if value.device != self.device:
+                                        logger.debug(f"Transferring {key} from {value.device} to {self.device}")
+                                        model_inputs[key] = value.to(self.device, non_blocking=False)
+                                        if self.device.type == 'cuda':
+                                            torch.cuda.synchronize(self.device)
+                                except Exception as device_transfer_error:
+                                    logger.error(f"Failed to transfer {key} to device {self.device}: {device_transfer_error}")
+                                    perplexities.append(float('inf'))
+                                    continue
+
+                        # Validate all model inputs are on correct device and have valid values
+                        for key, value in model_inputs.items():
+                            if torch.is_tensor(value):
+                                # Check device
+                                if value.device != self.device:
+                                    logger.error(f"Device mismatch for {key}: expected {self.device}, got {value.device}")
+                                    perplexities.append(float('inf'))
+                                    continue
+
+                                # Check for valid values
                                 if not torch.isfinite(value).all():
                                     logger.error(f"Non-finite values in model input {key} for choice {i}")
                                     raise ValueError(f"Non-finite values in {key}")
