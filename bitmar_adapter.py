@@ -849,3 +849,38 @@ class BitMarEvaluationAdapter:
                     del os.environ['CUDA_LAUNCH_BLOCKING']
             except Exception:
                 pass
+
+    def get_model_info(self) -> Dict:
+        """Get model information"""
+        info = {
+            'model_path': self.model_path,
+            'device': str(self.device),
+            'model_type': 'BitMar',
+            'architecture': 'BitNet-quantized Vision-Language Episodic Memory Transformer'
+        }
+
+        if self.model:
+            try:
+                # Get parameter count
+                total_params = sum(p.numel() for p in self.model.parameters())
+                trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+
+                info.update({
+                    'total_parameters': total_params,
+                    'trainable_parameters': trainable_params,
+                    'model_device': str(next(self.model.parameters()).device)
+                })
+
+                # Get config if available
+                if hasattr(self.model, 'config'):
+                    info['config'] = self.model.config
+
+            except Exception as e:
+                logger.warning(f"Could not get model info: {e}")
+
+        return info
+
+
+def create_bitmar_adapter(model_path: str, device: str = "cuda") -> BitMarEvaluationAdapter:
+    """Create BitMar evaluation adapter"""
+    return BitMarEvaluationAdapter(model_path, device)
