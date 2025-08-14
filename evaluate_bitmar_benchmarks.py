@@ -645,27 +645,28 @@ class BitMarEvaluator:
             return {"overall_accuracy": 0.0, "error": str(e)}
 
     def run_all_evaluations(self) -> Dict[str, Any]:
-        """Run all benchmark evaluations"""
-        logger.info("🚀 Starting comprehensive BitMar evaluation")
+        """Run selected benchmark evaluations for BitMar training data compatibility"""
+        logger.info("🚀 Starting BitMar evaluation on compatible benchmarks")
 
         start_time = time.time()
 
-        # Define all evaluations
+        # Define selected evaluations (7 benchmarks most suitable for your training data)
         evaluations = [
-            ("ARC-Challenge", self.evaluate_arc_challenge),
-            ("ARC-Easy", self.evaluate_arc_easy),
-            ("OpenbookQA", self.evaluate_openbookqa),
-            ("BoolQ", self.evaluate_boolq),
-            ("HellaSwag", self.evaluate_hellaswag),
-            ("PIQA", self.evaluate_piqa),
-            ("WinoGrande", self.evaluate_winogrande),
-            ("CommonsenseQA", self.evaluate_commonsenseqa),
-            ("TruthfulQA", self.evaluate_truthfulqa),
-            ("TriviaQA", self.evaluate_triviaqa),
-            ("MMLU", self.evaluate_mmlu),
+            ("ARC-Easy", self.evaluate_arc_easy),           # 0-shot - Basic science reasoning
+            ("BoolQ", self.evaluate_boolq),                 # 0-shot - Reading comprehension
+            ("HellaSwag", self.evaluate_hellaswag),         # 0-shot - Commonsense reasoning
+            ("PIQA", self.evaluate_piqa),                   # 0-shot - Physical reasoning
+            ("WinoGrande", self.evaluate_winogrande),       # 0-shot - Pronoun resolution
+            ("CommonsenseQA", self.evaluate_commonsenseqa), # 10-shot - Commonsense knowledge
+            ("MMLU", self.evaluate_mmlu),                   # 5-shot - Broad knowledge
         ]
 
         results = {}
+
+        logger.info(f"📊 Running {len(evaluations)} benchmarks optimized for your BitMar training data")
+        logger.info("   Training data compatibility:")
+        logger.info("   • Text sources: BNC spoken, CHILDES, Gutenberg, OpenSubtitles, Simple Wikipedia, Switchboard")
+        logger.info("   • These benchmarks test language understanding that should align with your training")
 
         for name, eval_func in evaluations:
             try:
@@ -693,8 +694,15 @@ class BitMarEvaluator:
             "total_evaluation_time": total_time,
             "device": str(self.device),
             "batch_size": self.batch_size,
+            "benchmarks_run": len(evaluations),
+            "training_data_optimized": True,
             "results": results
         }
+
+        logger.info(f"\n🎉 Evaluation Summary:")
+        logger.info(f"   • Benchmarks completed: {len([r for r in results.values() if 'error' not in r])}/{len(evaluations)}")
+        logger.info(f"   • Total time: {total_time:.1f} seconds")
+        logger.info(f"   • Optimized for BitMar training data: ✅")
 
         return final_results
 

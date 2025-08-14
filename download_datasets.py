@@ -40,12 +40,8 @@ def download_all_datasets(cache_dir=None):
     logger.info("🚀 Starting download of all benchmark datasets")
 
     datasets_to_download = [
-        # ARC datasets
-        ("ai2_arc", "ARC-Challenge"),
+        # ARC dataset (only ARC-Easy)
         ("ai2_arc", "ARC-Easy"),
-
-        # OpenbookQA
-        ("openbookqa", "main"),
 
         # SuperGLUE BoolQ
         ("super_glue", "boolq"),
@@ -62,14 +58,7 @@ def download_all_datasets(cache_dir=None):
         # CommonsenseQA
         ("commonsense_qa", None),
 
-        # TruthfulQA
-        ("truthful_qa", "multiple_choice"),
-
-        # TriviaQA
-        ("trivia_qa", "rc.nocontext"),
-
-        # MMLU
-        ("cais/mmlu", None),  # Will download all configs
+        # NOTE: MMLU is handled separately below due to multiple configs
     ]
 
     success_count = 0
@@ -80,26 +69,41 @@ def download_all_datasets(cache_dir=None):
         if success:
             success_count += 1
 
-    # Special handling for MMLU (download all subjects)
+    # Special handling for MMLU (download all subjects individually)
     try:
         logger.info("📥 Downloading all MMLU subjects...")
         from datasets import get_dataset_config_names
-        subjects = get_dataset_config_names("cais/mmlu")
 
+        # Get all available MMLU subjects
+        subjects = get_dataset_config_names("cais/mmlu")
         logger.info(f"Found {len(subjects)} MMLU subjects")
+
         mmlu_success = 0
+        mmlu_total = len(subjects)
 
         for i, subject in enumerate(subjects):
             try:
-                load_dataset("cais/mmlu", subject, cache_dir=cache_dir)
-                mmlu_success += 1
+                logger.info(f"📥 Downloading MMLU subject: {subject} ({i+1}/{mmlu_total})")
+                success = download_dataset("cais/mmlu", subject, cache_dir)
+                if success:
+                    mmlu_success += 1
+
+                # Log progress every 10 subjects
                 if (i + 1) % 10 == 0:
-                    logger.info(f"Downloaded {i + 1}/{len(subjects)} MMLU subjects")
+                    logger.info(f"MMLU progress: {i + 1}/{mmlu_total} subjects processed")
+
             except Exception as e:
                 logger.warning(f"Failed to download MMLU subject {subject}: {e}")
+                continue
 
-        logger.info(f"✅ Downloaded {mmlu_success}/{len(subjects)} MMLU subjects")
+        logger.info(f"✅ Downloaded {mmlu_success}/{mmlu_total} MMLU subjects")
 
+        # Add MMLU to success count if we got most subjects
+        if mmlu_success > mmlu_total * 0.8:  # If we got at least 80% of subjects
+            success_count += 1
+            total_count += 1
+        else:
+            total_count += 1
     except Exception as e:
         logger.error(f"❌ Failed to download MMLU subjects: {e}")
 
@@ -119,16 +123,12 @@ def verify_datasets(cache_dir=None):
     logger.info("🔍 Verifying dataset availability...")
 
     verification_list = [
-        ("ai2_arc", "ARC-Challenge", "test"),
         ("ai2_arc", "ARC-Easy", "test"),
-        ("openbookqa", "main", "test"),
         ("super_glue", "boolq", "validation"),
         ("hellaswag", None, "validation"),
         ("piqa", None, "validation"),
         ("winogrande", "winogrande_debiased", "validation"),
         ("commonsense_qa", None, "validation"),
-        ("truthful_qa", "multiple_choice", "validation"),
-        ("trivia_qa", "rc.nocontext", "validation"),
     ]
 
     verified_count = 0

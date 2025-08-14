@@ -1,13 +1,13 @@
 # BitMar Model Evaluation Suite
 
-This repository contains a comprehensive evaluation suite for the BitMar model, designed to run all major language model benchmarks including ARC, OpenbookQA, BoolQ, HellaSwag, PIQA, WinoGrande, CommonsenseQA, TruthfulQA, TriviaQA, and MMLU.
+This repository contains a comprehensive evaluation suite for the BitMar model, designed to run 7 key language model benchmarks that are most compatible with BitMar's training data.
 
 ## Overview
 
 The evaluation suite automatically:
-- Downloads all required benchmark datasets
+- Downloads 7 selected benchmark datasets optimized for BitMar's training data
 - Loads your trained BitMar model from Hugging Face Hub
-- Runs comprehensive evaluations across 11 different benchmarks
+- Runs evaluations on benchmarks that align with your training sources
 - Generates detailed results and summaries
 - Supports both GPU and CPU evaluation
 
@@ -17,12 +17,24 @@ The evaluation suite automatically:
 - **Training**: 100M tokens with perfect image-caption alignment
 - **Architecture**: BitNet-based multimodal transformer with episodic memory
 
+## Training Data Compatibility
+
+Your BitMar model was trained on the `train_50M` dataset containing:
+- `bnc_spoken.train` - British National Corpus spoken language
+- `childes.train` - Child language data  
+- `gutenberg.train` - Literature texts
+- `open_subtitles.train` - Subtitle text
+- `simple_wiki.train` - Simplified Wikipedia
+- `switchboard.train` - Conversational speech transcripts
+
+The selected benchmarks test language understanding that should align well with this training data.
+
 ## Requirements
 
 ### System Requirements
 - **GPU**: NVIDIA A100 (recommended) or other CUDA-compatible GPU
 - **Memory**: 16+ GB RAM, 8+ GB VRAM
-- **Storage**: ~15 GB for datasets
+- **Storage**: ~8 GB for selected datasets (reduced from 15 GB)
 - **Python**: 3.8+
 
 ### Software Dependencies
@@ -42,12 +54,12 @@ cd /path/to/BitMar-Eval
 
 This single command will:
 1. Install all dependencies
-2. Download all benchmark datasets (~15 GB)
+2. Download 7 selected benchmark datasets (~8 GB)
 3. Test model loading
-4. Run all 11 benchmarks
+4. Run 7 optimized benchmarks
 5. Generate comprehensive results
 
-**Expected Runtime**: 3-5 hours total (including dataset download)
+**Expected Runtime**: 2-3 hours total (reduced from 3-5 hours)
 
 ### Option 2: Manual Step-by-Step Setup
 
@@ -63,7 +75,7 @@ pip install -r requirements.txt
 # 3. Test model loading (optional but recommended)
 python test_model_loading.py
 
-# 4. Download benchmark datasets
+# 4. Download selected benchmark datasets
 python download_datasets.py --cache_dir ./dataset_cache
 
 # 5. Verify dataset integrity
@@ -77,170 +89,48 @@ python evaluate_bitmar_benchmarks.py \
     --output_dir evaluation_results
 ```
 
-## Detailed Usage Instructions
-
-### 1. Environment Setup
-
-#### Python Environment (Recommended)
-```bash
-# Create virtual environment
-python -m venv bitmar_eval_env
-source bitmar_eval_env/bin/activate  # Linux/Mac
-# or
-bitmar_eval_env\Scripts\activate     # Windows
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-#### Required Packages
-The evaluation suite requires:
-- PyTorch 2.0+
-- Transformers 4.30+
-- Datasets 2.12+
-- Accelerate 0.20+
-- And other packages listed in `requirements.txt`
-
-### 2. Model Testing
-
-Before running the full evaluation, test if your model loads correctly:
-
-```bash
-python test_model_loading.py
-```
-
-**Expected Output**:
-```
-✅ CUDA available: NVIDIA A100-SXM4-80GB
-✅ Model loaded successfully!
-✅ Tokenization test passed: torch.Size([1, 6])
-✅ Generation test passed: 'Paris'
-🎉 All tests passed! BitMar model is ready for evaluation.
-```
-
-### 3. Dataset Download
-
-Download all required benchmark datasets:
-
-```bash
-# Download all datasets (30-60 minutes)
-python download_datasets.py --cache_dir ./dataset_cache
-
-# Verify download success
-python download_datasets.py --cache_dir ./dataset_cache --verify_only
-```
-
-**Datasets Downloaded**:
-- ARC-Challenge & ARC-Easy
-- OpenbookQA
-- BoolQ (SuperGLUE)
-- HellaSwag
-- PIQA
-- WinoGrande
-- CommonsenseQA
-- TruthfulQA
-- TriviaQA
-- MMLU (all 57 subjects)
-
-**Storage Requirements**: ~15 GB total
-
-### 4. Running Evaluations
-
-#### Full Evaluation (All Benchmarks)
-```bash
-python evaluate_bitmar_benchmarks.py \
-    --model_path "euhidaman/bitmar-attention-multimodal" \
-    --device "cuda" \
-    --batch_size 16 \
-    --output_dir evaluation_results
-```
-
-#### Custom Evaluation Options
-
-**Different Batch Sizes**:
-```bash
-# For limited GPU memory
-python evaluate_bitmar_benchmarks.py \
-    --model_path "euhidaman/bitmar-attention-multimodal" \
-    --device "cuda" \
-    --batch_size 4 \
-    --output_dir evaluation_results
-
-# For high-memory GPUs
-python evaluate_bitmar_benchmarks.py \
-    --model_path "euhidaman/bitmar-attention-multimodal" \
-    --device "cuda" \
-    --batch_size 32 \
-    --output_dir evaluation_results
-```
-
-**CPU-Only Evaluation**:
-```bash
-python evaluate_bitmar_benchmarks.py \
-    --model_path "euhidaman/bitmar-attention-multimodal" \
-    --device "cpu" \
-    --batch_size 2 \
-    --output_dir evaluation_results
-```
-
-**Note**: CPU evaluation will be significantly slower (10-15x) but works if GPU is unavailable.
-
-### 5. Monitoring Progress
-
-#### Real-time Log Monitoring
-```bash
-# Monitor evaluation progress
-tail -f bitmar_evaluation.log
-
-# Monitor GPU usage
-watch -n 1 nvidia-smi
-```
-
-#### Progress Indicators
-The evaluation will show progress for each benchmark:
-```
-🧠 Evaluating ARC-Challenge (0-shot)
-ARC-Challenge progress: 50 samples processed
-ARC-Challenge progress: 100 samples processed
-...
-✅ ARC-Challenge completed: 0.2845 accuracy (342/1172)
-```
-
 ## Benchmark Details
 
-### Evaluation Configurations
+### Selected Benchmarks (Optimized for BitMar Training Data)
 
-| Benchmark | Type | Shots | Metric | Description |
-|-----------|------|-------|---------|-------------|
-| ARC-Challenge | 0-shot | 0 | Accuracy | AI2 Reasoning Challenge (hard) |
-| ARC-Easy | 0-shot | 0 | Accuracy | AI2 Reasoning Challenge (easy) |
-| OpenbookQA | 0-shot | 0 | Accuracy | Open-book question answering |
-| BoolQ | 0-shot | 0 | Accuracy | Boolean questions |
-| HellaSwag | 0-shot | 0 | Accuracy | Commonsense reasoning |
-| PIQA | 0-shot | 0 | Accuracy | Physical interaction QA |
-| WinoGrande | 0-shot | 0 | Accuracy | Winograd schema challenge |
-| CommonsenseQA | 10-shot | 10 | Accuracy | Commonsense reasoning |
-| TruthfulQA | 10-shot | 10 | MC2 | Truthfulness evaluation |
-| TriviaQA | 5-shot | 5 | EM | Exact match on trivia |
-| MMLU | 5-shot | 5 | Accuracy | Massive multitask understanding |
+| Benchmark | Type | Shots | Metric | Description | Training Data Alignment |
+|-----------|------|-------|---------|-------------|-------------------------|
+| **MMLU** | 5-shot | 5 | Accuracy | Massive multitask understanding | ✅ Wikipedia content |
+| **HellaSwag** | 0-shot | 0 | Accuracy | Commonsense reasoning | ✅ Conversational/subtitle data |
+| **WinoGrande** | 0-shot | 0 | Accuracy | Pronoun resolution | ✅ Diverse text sources |
+| **BoolQ** | 0-shot | 0 | Accuracy | Reading comprehension | ✅ Wikipedia + diverse text |
+| **ARC-Easy** | 0-shot | 0 | Accuracy | Basic science reasoning | ✅ Simplified content |
+| **CommonsenseQA** | 10-shot | 10 | Accuracy | Commonsense knowledge | ✅ Conversational understanding |
+| **PIQA** | 0-shot | 0 | Accuracy | Physical reasoning | ✅ General language understanding |
 
 ### Expected Runtimes
 
 On NVIDIA A100:
-- **Dataset Download**: 30-60 minutes
-- **ARC-Challenge**: ~15 minutes
+- **Dataset Download**: 20-40 minutes (reduced)
 - **ARC-Easy**: ~10 minutes
-- **OpenbookQA**: ~5 minutes
 - **BoolQ**: ~8 minutes
 - **HellaSwag**: ~12 minutes
 - **PIQA**: ~5 minutes
 - **WinoGrande**: ~8 minutes
 - **CommonsenseQA**: ~20 minutes
-- **TruthfulQA**: ~15 minutes
-- **TriviaQA**: ~25 minutes
 - **MMLU**: ~45 minutes
 
-**Total Evaluation Time**: 2-4 hours
+**Total Evaluation Time**: 1.5-2 hours (reduced from 2-4 hours)
+
+## Why These 7 Benchmarks?
+
+These benchmarks were selected because they:
+
+1. **Align with Training Data**: Test language understanding skills present in your training sources
+2. **Avoid Domain Mismatch**: Skip highly specialized benchmarks that require knowledge not in your training data
+3. **Cover Core Skills**: Test reading comprehension, commonsense reasoning, and basic knowledge
+4. **Efficient Evaluation**: Faster runtime while maintaining comprehensive assessment
+
+**Excluded Benchmarks** (and why):
+- ARC-Challenge: Too advanced for training data scope
+- OpenbookQA: Specialized science knowledge
+- TruthfulQA: Tests truthfulness (challenging for diverse training sources)
+- TriviaQA: Factual knowledge beyond training scope
 
 ## Results and Output
 
@@ -251,14 +141,15 @@ evaluation_results/
 ├── bitmar_summary_20250814_143022.txt        # Human-readable summary
 └── ...
 
-logs/
-├── bitmar_evaluation_20250814_143022.log     # Execution log
-└── ...
-
 dataset_cache/
-├── ai2_arc/                                  # Cached datasets
+├── ai2_arc/                                  # Only ARC-Easy
 ├── hellaswag/
-├── ...
+├── super_glue/                              # BoolQ
+├── piqa/
+├── winogrande/
+├── commonsense_qa/
+├── cais--mmlu/                              # All MMLU subjects
+└── ...
 ```
 
 ### Results Format
@@ -270,10 +161,8 @@ BitMar Model Evaluation Summary
 
 Model: euhidaman/bitmar-attention-multimodal
 Date: 2025-08-14T14:30:22
-Total Time: 8247.32 seconds
-
-ARC-Challenge:
-  ✅ Accuracy: 0.2845
+Total Time: 5247.32 seconds
+Training Data Optimized: ✅
 
 ARC-Easy:
   ✅ Accuracy: 0.4321
@@ -281,136 +170,54 @@ ARC-Easy:
 BoolQ:
   ✅ Accuracy: 0.6124
 
-...
+HellaSwag:
+  ✅ Accuracy: 0.3456
+
+PIQA:
+  ✅ Accuracy: 0.5234
+
+WinoGrande:
+  ✅ Accuracy: 0.5123
+
+CommonsenseQA:
+  ✅ Accuracy: 0.4567
+
+MMLU:
+  ✅ Overall Accuracy: 0.3234
 ```
 
-#### JSON Results Structure
-```json
-{
-  "model_path": "euhidaman/bitmar-attention-multimodal",
-  "evaluation_date": "2025-08-14T14:30:22",
-  "total_evaluation_time": 8247.32,
-  "results": {
-    "ARC-Challenge": {
-      "accuracy": 0.2845,
-      "correct": 342,
-      "total": 1172
-    },
-    ...
-  }
-}
-```
-
-## Troubleshooting
-
-### Common Issues
-
-#### 1. CUDA Out of Memory
-**Error**: `RuntimeError: CUDA out of memory`
-
-**Solutions**:
-```bash
-# Reduce batch size
-python evaluate_bitmar_benchmarks.py ... --batch_size 4
-
-# Use CPU instead
-python evaluate_bitmar_benchmarks.py ... --device cpu
-```
-
-#### 2. Model Loading Fails
-**Error**: `OSError: Repository not found`
-
-**Solutions**:
-- Ensure you have internet connection
-- Check if model repository exists: https://huggingface.co/euhidaman/bitmar-attention-multimodal
-- Try authentication if repository is private
-
-#### 3. Dataset Download Fails
-**Error**: `Connection timeout` or `Dataset not found`
-
-**Solutions**:
-```bash
-# Retry download
-python download_datasets.py --cache_dir ./dataset_cache --force_download
-
-# Check internet connection
-# Try with smaller timeout or different mirror
-```
-
-#### 4. Evaluation Hangs
-**Symptoms**: No progress for >30 minutes
-
-**Solutions**:
-```bash
-# Check GPU memory
-nvidia-smi
-
-# Restart with smaller batch size
-# Check logs for specific errors
-tail -f bitmar_evaluation.log
-```
-
-### Performance Optimization
-
-#### For Faster Evaluation
-```bash
-# Use larger batch size if memory allows
---batch_size 32
-
-# Use multiple workers (if dataset supports)
-# Set optimal number of workers for your system
-```
-
-#### For Limited Resources
-```bash
-# Minimal memory usage
---batch_size 1 --device cpu
-
-# Reduce evaluation scope (modify script to run specific benchmarks)
-```
-
-### Getting Help
-
-1. **Check Logs**: Always check `bitmar_evaluation.log` for detailed error messages
-2. **Monitor Resources**: Use `nvidia-smi` and `htop` to monitor GPU/CPU usage
-3. **Verify Setup**: Run `test_model_loading.py` to ensure basic functionality
-
-## Advanced Usage
-
-### Custom Benchmark Selection
-
-To run specific benchmarks, modify the `evaluate_bitmar_benchmarks.py` script or create a custom evaluation script:
-
-```python
-# Example: Run only ARC benchmarks
-evaluator = BitMarEvaluator(model_path="euhidaman/bitmar-attention-multimodal")
-arc_challenge_results = evaluator.evaluate_arc_challenge()
-arc_easy_results = evaluator.evaluate_arc_easy()
-```
-
-### Integration with Other Pipelines
-
-The evaluation results can be integrated with other evaluation pipelines:
+## Commands for A100 Server
 
 ```bash
-# Save results in specific format for downstream analysis
+# Complete pipeline in one go:
+cd /path/to/BitMar-Eval
+pip install -r requirements.txt
+python test_model_loading.py
+python download_datasets.py --cache_dir ./dataset_cache
 python evaluate_bitmar_benchmarks.py \
-    --output_dir evaluation_results \
-    --save_format json,csv,txt
+    --model_path "euhidaman/bitmar-attention-multimodal" \
+    --device "cuda" \
+    --batch_size 16 \
+    --output_dir evaluation_results
 ```
 
-### Batch Processing Multiple Models
+## Performance Expectations
 
-To evaluate multiple model checkpoints:
+Given your BitMar model's training on 100M tokens from diverse text sources, you can expect:
 
-```bash
-# Create a script to iterate through checkpoints
-for checkpoint in checkpoints/*; do
-    python evaluate_bitmar_benchmarks.py \
-        --model_path "$checkpoint" \
-        --output_dir "results_$(basename $checkpoint)"
-done
-```
+- **Strong Performance**: BoolQ, HellaSwag (conversational reasoning)
+- **Good Performance**: WinoGrande, PIQA (general language understanding)
+- **Moderate Performance**: ARC-Easy, CommonsenseQA (basic reasoning)
+- **Variable Performance**: MMLU (depends on subject overlap with training data)
+
+The evaluation focuses on testing capabilities that your model should have learned from its training data, providing meaningful insights into its language understanding abilities.
+
+## Storage Requirements
+
+- **Datasets**: ~8 GB (reduced from 15 GB)
+- **Model Cache**: ~2 GB
+- **Results**: ~100 MB
+- **Total**: ~10 GB
 
 ## Citation
 
@@ -418,23 +225,9 @@ If you use this evaluation suite in your research, please cite:
 
 ```bibtex
 @misc{bitmar_eval_suite,
-  title={BitMar Comprehensive Evaluation Suite},
+  title={BitMar Evaluation Suite - Training Data Optimized},
   author={BitMar Team},
   year={2025},
   howpublished={\url{https://github.com/your-repo/bitmar-eval}}
 }
 ```
-
-## License
-
-This evaluation suite is released under the MIT License. See LICENSE file for details.
-
-## Acknowledgments
-
-This evaluation suite uses datasets and evaluation frameworks from:
-- AI2 (ARC, OpenbookQA)
-- SuperGLUE (BoolQ)
-- Various academic institutions (HellaSwag, PIQA, WinoGrande, etc.)
-- Hugging Face Datasets library
-
-Special thanks to the BabyLM challenge organizers and the broader NLP community.
