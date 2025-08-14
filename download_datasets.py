@@ -609,6 +609,9 @@ def verify_datasets(cache_dir=None):
     """Verify that all datasets are properly cached"""
     logger.info("🔍 Verifying dataset availability...")
 
+    # Import load_dataset here to ensure it's available in function scope
+    from datasets import load_dataset, load_from_disk
+
     verification_list = [
         ("ai2_arc", "ARC-Easy", "test"),
         ("super_glue", "boolq", "validation"),
@@ -648,7 +651,6 @@ def verify_datasets(cache_dir=None):
                     if cached_path.exists() and cached_path.is_dir():
                         try:
                             # Try to load the cached dataset
-                            from datasets import load_from_disk
                             cached_dataset = load_from_disk(str(cached_path))
 
                             # Check if the dataset has the required split
@@ -709,9 +711,10 @@ def verify_datasets(cache_dir=None):
         mmlu_verified = False
 
         if cache_dir:
-            # Check for MMLU cache directories
+            # Check for MMLU cache directories with correct patterns
             cache_path = Path(cache_dir)
             mmlu_cache_patterns = [
+                "cais___mmlu",  # The actual pattern used by datasets library
                 "cais--mmlu__*",
                 "mmlu__*",
                 "cais-mmlu*",
@@ -719,26 +722,87 @@ def verify_datasets(cache_dir=None):
             ]
 
             mmlu_subjects_found = []
-            for pattern in mmlu_cache_patterns:
-                mmlu_dirs = list(cache_path.glob(pattern))
-                for mmlu_dir in mmlu_dirs:
-                    if mmlu_dir.is_dir():
-                        try:
-                            from datasets import load_from_disk
-                            cached_mmlu = load_from_disk(str(mmlu_dir))
 
-                            # Check if it has test split
-                            if isinstance(cached_mmlu, dict) and 'test' in cached_mmlu:
-                                subject_name = mmlu_dir.name.split('__')[-1] if '__' in mmlu_dir.name else mmlu_dir.name
-                                mmlu_subjects_found.append(subject_name)
-                            elif not isinstance(cached_mmlu, dict):
-                                # Single dataset, assume it's a valid MMLU subject
-                                subject_name = mmlu_dir.name.split('__')[-1] if '__' in mmlu_dir.name else mmlu_dir.name
-                                mmlu_subjects_found.append(subject_name)
+            # First check for the main MMLU cache directory
+            main_mmlu_dir = cache_path / "cais___mmlu"
+            if main_mmlu_dir.exists() and main_mmlu_dir.is_dir():
+                # List all subject directories
+                subject_dirs = [d for d in main_mmlu_dir.iterdir() if d.is_dir()]
 
-                        except Exception as mmlu_cache_error:
-                            logger.debug(f"Failed to load MMLU cache from {mmlu_dir}: {mmlu_cache_error}")
-                            continue
+                for subject_dir in subject_dirs:
+                    subject_name = subject_dir.name
+                    try:
+                        # Try to find the actual dataset files in the nested structure
+                        # The structure is typically: cais___mmlu/subject_name/version/hash/
+                        dataset_path = None
+                        for version_dir in subject_dir.iterdir():
+                            if version_dir.is_dir():
+                                for hash_dir in version_dir.iterdir():
+                                    if hash_dir.is_dir():
+                                        # Check if this contains dataset files
+                                        dataset_files = list(hash_dir.glob("*.arrow")) + list(hash_dir.glob("*.parquet")) + list(hash_dir.glob("dataset_info.json"))
+                                        if dataset_files:
+                                            dataset_path = hash_dir
+                                            break
+                                if dataset_path:
+                                    break
+
+                        if dataset_path:
+                            # Try to load using the parent directory structure that datasets expects
+                            try:
+                                from datasets import load_from_disk
+                                cached_mmlu = load_from_disk(str(subject_dir))
+
+                                # Check if it has the expected splits
+                                if isinstance(cached_mmlu, dict):
+                                    if 'test' in cached_mmlu or 'validation' in cached_mmlu or 'train' in cached_mmlu:
+                                        mmlu_subjects_found.append(subject_name)
+                                        logger.debug(f"Found MMLU subject: {subject_name}")
+                                else:
+                                    # Single dataset without splits
+                                    mmlu_subjects_found.append(subject_name)
+                                    logger.debug(f"Found MMLU subject (single dataset): {subject_name}")
+
+                            except Exception as load_error:
+                                # If direct loading fails, try alternative approach
+                                try:
+                                    from datasets import load_dataset
+                                    test_dataset = load_dataset("cais/mmlu", subject_name, split="test", cache_dir=cache_dir)
+                                    if len(test_dataset) > 0:
+                                        mmlu_subjects_found.append(subject_name)
+                                        logger.debug(f"Verified MMLU subject via load_dataset: {subject_name}")
+                                except Exception as fallback_error:
+                                    logger.debug(f"Could not verify MMLU subject {subject_name}: {load_error}, {fallback_error}")
+                                    continue
+                        else:
+                            logger.debug(f"No dataset files found for MMLU subject: {subject_name}")
+
+                    except Exception as subject_error:
+                        logger.debug(f"Error processing MMLU subject {subject_name}: {subject_error}")
+                        continue
+
+            # Fallback: check other cache patterns if main directory approach didn't work
+            if not mmlu_subjects_found:
+                for pattern in mmlu_cache_patterns[1:]:  # Skip the first one we already checked
+                    mmlu_dirs = list(cache_path.glob(pattern))
+                    for mmlu_dir in mmlu_dirs:
+                        if mmlu_dir.is_dir():
+                            try:
+                                from datasets import load_from_disk
+                                cached_mmlu = load_from_disk(str(mmlu_dir))
+
+                                # Check if it has test split
+                                if isinstance(cached_mmlu, dict) and ('test' in cached_mmlu or 'validation' in cached_mmlu):
+                                    subject_name = mmlu_dir.name.split('__')[-1] if '__' in mmlu_dir.name else mmlu_dir.name
+                                    mmlu_subjects_found.append(subject_name)
+                                elif not isinstance(cached_mmlu, dict):
+                                    # Single dataset, assume it's a valid MMLU subject
+                                    subject_name = mmlu_dir.name.split('__')[-1] if '__' in mmlu_dir.name else mmlu_dir.name
+                                    mmlu_subjects_found.append(subject_name)
+
+                            except Exception as mmlu_cache_error:
+                                logger.debug(f"Failed to load MMLU cache from {mmlu_dir}: {mmlu_cache_error}")
+                                continue
 
             if mmlu_subjects_found:
                 logger.info(f"✅ MMLU - found {len(mmlu_subjects_found)} cached subjects")
@@ -748,23 +812,34 @@ def verify_datasets(cache_dir=None):
 
         if not mmlu_verified:
             # Fallback to standard MMLU verification
-            from datasets import get_dataset_config_names
-            subjects = get_dataset_config_names("cais/mmlu")
-            mmlu_verified_count = 0
+            try:
+                from datasets import get_dataset_config_names
+                subjects = get_dataset_config_names("cais/mmlu")
+                mmlu_verified_count = 0
 
-            for subject in subjects[:5]:  # Check first 5 subjects
-                try:
-                    dataset = load_dataset("cais/mmlu", subject, split="test", cache_dir=cache_dir)
-                    mmlu_verified_count += 1
-                except:
-                    break
+                # Try to verify a few subjects to confirm MMLU is working
+                test_subjects = subjects[:5] if len(subjects) >= 5 else subjects
+                for subject in test_subjects:
+                    try:
+                        from datasets import load_dataset
+                        dataset = load_dataset("cais/mmlu", subject, split="test", cache_dir=cache_dir)
+                        if len(dataset) > 0:
+                            mmlu_verified_count += 1
+                    except Exception as verify_error:
+                        logger.debug(f"Failed to verify MMLU subject {subject}: {verify_error}")
+                        break
 
-            if mmlu_verified_count == 5:
-                logger.info(f"✅ MMLU - verified {len(subjects)} subjects available")
-                verified_count += 1
-                total_count += 1
-            else:
-                logger.error(f"❌ MMLU verification failed")
+                if mmlu_verified_count >= len(test_subjects):
+                    logger.info(f"✅ MMLU - verified {len(subjects)} subjects available")
+                    verified_count += 1
+                    total_count += 1
+                    mmlu_verified = True
+                else:
+                    logger.error(f"❌ MMLU verification failed - only {mmlu_verified_count}/{len(test_subjects)} subjects verified")
+                    total_count += 1
+
+            except Exception as fallback_error:
+                logger.error(f"❌ MMLU fallback verification failed: {fallback_error}")
                 total_count += 1
 
     except Exception as e:
