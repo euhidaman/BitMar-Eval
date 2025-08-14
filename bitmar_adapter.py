@@ -211,12 +211,52 @@ class BitMarEvaluationAdapter:
                     logger.info("✅ Loaded model weights (non-strict)")
                 except Exception as e:
                     logger.warning(f"Failed to load some weights: {e}")
-                    # Try to load compatible weights only
+                    # Try to load compatible weights only with shape fixing
                     model_dict = self.model.state_dict()
-                    filtered_dict = {k: v for k, v in model_state_dict.items() if k in model_dict and model_dict[k].shape == v.shape}
+                    filtered_dict = {}
+
+                    for k, v in model_state_dict.items():
+                        if k in model_dict:
+                            current_shape = model_dict[k].shape
+                            checkpoint_shape = v.shape
+
+                            if current_shape == checkpoint_shape:
+                                # Perfect match, use directly
+                                filtered_dict[k] = v
+                            elif 'weight_scale' in k or 'input_scale' in k:
+                                # Handle weight_scale buffer shape mismatch
+                                if checkpoint_shape == torch.Size([]) and current_shape == torch.Size([1]):
+                                    # Convert scalar to 1D tensor
+                                    filtered_dict[k] = v.unsqueeze(0)
+                                    logger.debug(f"Fixed shape for {k}: {checkpoint_shape} -> {current_shape}")
+                                elif checkpoint_shape == torch.Size([1]) and current_shape == torch.Size([]):
+                                    # Convert 1D tensor to scalar
+                                    filtered_dict[k] = v.squeeze(0)
+                                    logger.debug(f"Fixed shape for {k}: {checkpoint_shape} -> {current_shape}")
+                                else:
+                                    logger.warning(f"Cannot fix shape mismatch for {k}: {checkpoint_shape} vs {current_shape}")
+                            elif k.endswith('.weight') or k.endswith('.bias'):
+                                # Handle other weight/bias mismatches by padding or trimming
+                                if len(current_shape) == len(checkpoint_shape):
+                                    # Same number of dimensions, try to fix
+                                    fixed_tensor = self._fix_tensor_shape(v, current_shape, k)
+                                    if fixed_tensor is not None:
+                                        filtered_dict[k] = fixed_tensor
+                                    else:
+                                        logger.warning(f"Skipping incompatible weight {k}: {checkpoint_shape} vs {current_shape}")
+                                else:
+                                    logger.warning(f"Skipping weight {k} due to dimension mismatch: {checkpoint_shape} vs {current_shape}")
+                            else:
+                                logger.warning(f"Skipping incompatible parameter {k}: {checkpoint_shape} vs {current_shape}")
+                        else:
+                            logger.debug(f"Skipping unknown parameter: {k}")
+
+                    # Update model with filtered weights
                     model_dict.update(filtered_dict)
                     self.model.load_state_dict(model_dict)
-                    logger.info(f"✅ Loaded {len(filtered_dict)}/{len(model_state_dict)} compatible weights")
+
+                    logger.info(f"✅ Loaded {len(filtered_dict)}/{len(model_state_dict)} compatible weights with shape fixes")
+                    logger.info(f"   Successfully fixed {sum(1 for k in filtered_dict.keys() if 'weight_scale' in k or 'input_scale' in k)} scale buffer shapes")
 
                 # Move to device
                 self.model.to(self.device)
@@ -281,6 +321,56 @@ class BitMarEvaluationAdapter:
 
         logger.info(f"Created BitMar config with vocab_size={bitmar_config['vocab_size']}, text_dim={bitmar_config['text_encoder_dim']}")
         return bitmar_config
+
+    def _fix_tensor_shape(self, tensor: torch.Tensor, target_shape: torch.Size, param_name: str) -> Optional[torch.Tensor]:
+        """Fix tensor shape mismatches by padding, trimming, or reshaping"""
+        try:
+            current_shape = tensor.shape
+
+            # Handle 2D weight matrices
+            if len(target_shape) == 2 and len(current_shape) == 2:
+                target_rows, target_cols = target_shape
+                current_rows, current_cols = current_shape
+
+                # Create new tensor with target shape
+                fixed_tensor = torch.zeros(target_shape, dtype=tensor.dtype)
+
+                # Copy overlapping region
+                copy_rows = min(target_rows, current_rows)
+                copy_cols = min(target_cols, current_cols)
+
+                fixed_tensor[:copy_rows, :copy_cols] = tensor[:copy_rows, :copy_cols]
+
+                logger.debug(f"Fixed weight shape for {param_name}: {current_shape} -> {target_shape}")
+                return fixed_tensor
+
+            # Handle 1D bias vectors
+            elif len(target_shape) == 1 and len(current_shape) == 1:
+                target_size = target_shape[0]
+                current_size = current_shape[0]
+
+                if target_size > current_size:
+                    # Pad with zeros
+                    padding = torch.zeros(target_size - current_size, dtype=tensor.dtype)
+                    fixed_tensor = torch.cat([tensor, padding])
+                else:
+                    # Truncate
+                    fixed_tensor = tensor[:target_size]
+
+                logger.debug(f"Fixed bias shape for {param_name}: {current_shape} -> {target_shape}")
+                return fixed_tensor
+
+            # Handle scalar tensors
+            elif len(target_shape) == 0 and len(current_shape) == 1 and current_shape[0] == 1:
+                return tensor.squeeze(0)
+            elif len(target_shape) == 1 and target_shape[0] == 1 and len(current_shape) == 0:
+                return tensor.unsqueeze(0)
+
+            return None
+
+        except Exception as e:
+            logger.warning(f"Failed to fix shape for {param_name}: {e}")
+            return None
 
     def generate_response(self, prompt: str, max_length: int = 100, temperature: float = 0.1) -> str:
         """Generate response using BitMar model"""
