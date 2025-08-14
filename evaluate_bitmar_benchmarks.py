@@ -307,7 +307,8 @@ class BitMarEvaluator:
         logger.info("🧠 Evaluating PIQA (0-shot)")
 
         try:
-            dataset = load_dataset("piqa", split="validation")
+            # Load PIQA with trust_remote_code=True
+            dataset = load_dataset("piqa", split="validation", trust_remote_code=True)
             correct = 0
             total = 0
 

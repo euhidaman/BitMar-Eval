@@ -45,14 +45,10 @@ def download_dataset(dataset_name, config=None, cache_dir=None):
                         except Exception as e:
                             logger.warning(f"Failed to clear cache {cache_file}: {e}")
 
-            # Special handling for problematic datasets with alternative loading methods
-            if dataset_name.lower() == 'piqa':
-                return download_piqa_alternative(cache_dir)
-
-            # Standard download with enhanced parameters
+            # Enhanced download parameters with proper trust_remote_code handling
             download_kwargs = {
                 'cache_dir': cache_dir,
-                'trust_remote_code': True,
+                'trust_remote_code': True,  # Always allow custom code for problematic datasets
                 'download_mode': 'force_redownload' if attempt > 0 else 'reuse_dataset_if_exists',
                 'num_proc': 1,  # Single process to avoid encoding issues
             }
@@ -75,8 +71,36 @@ def download_dataset(dataset_name, config=None, cache_dir=None):
         except Exception as e:
             error_msg = str(e).lower()
 
-            # Handle specific error types
-            if 'utf-8' in error_msg or 'decode' in error_msg or 'encoding' in error_msg:
+            # Handle specific error types including custom code requirements
+            if 'custom code' in error_msg or 'trust_remote_code' in error_msg:
+                logger.warning(f"⚠️  Custom code required for {dataset_name}: {e}")
+
+                # Retry with explicit trust_remote_code=True
+                try:
+                    logger.info(f"🔄 Retrying {dataset_name} with trust_remote_code=True...")
+                    download_kwargs['trust_remote_code'] = True
+
+                    if config:
+                        dataset = load_dataset(dataset_name, config, **download_kwargs)
+                    else:
+                        dataset = load_dataset(dataset_name, **download_kwargs)
+
+                    logger.info(f"✅ Successfully downloaded {dataset_name} with custom code")
+                    return True
+
+                except Exception as retry_error:
+                    logger.warning(f"⚠️  Still failed after enabling custom code: {retry_error}")
+
+                    # Try alternative methods for specific datasets
+                    if dataset_name.lower() == 'piqa':
+                        success = download_piqa_alternative(cache_dir)
+                        if success:
+                            return True
+
+                    if attempt < max_retries - 1:
+                        continue
+
+            elif 'utf-8' in error_msg or 'decode' in error_msg or 'encoding' in error_msg:
                 logger.warning(f"⚠️  Encoding error for {dataset_name}: {e}")
 
                 # Try alternative download methods for encoding issues
